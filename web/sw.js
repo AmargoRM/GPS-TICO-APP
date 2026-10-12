@@ -7,7 +7,7 @@
    IMPORTANTE para publicar una versión nueva: cambiar el número de VERSION.
    Así el celular detecta el cambio y la app muestra "Hay una versión nueva".
    ======================================================================= */
-const VERSION = '1.0.0';
+const VERSION = '1.1.0';
 const CACHE = 'gps-tico-web-' + VERSION;
 
 // Todos los archivos que forman la app (rutas relativas a esta carpeta).
@@ -33,7 +33,8 @@ const ARCHIVOS = [
   'js/puntos.js',
   'js/exportar.js',
   'js/copia.js',
-  'js/ajustes.js'
+  'js/ajustes.js',
+  'js/instalar.js'
 ];
 
 // Instalación: descarga y guarda todos los archivos. Si falta uno, no se instala

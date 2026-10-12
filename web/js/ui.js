@@ -100,7 +100,7 @@ export function elegirArchivo(accept) {
 }
 
 // Aviso fijo arriba de la pantalla (copia vieja, versión nueva, etc.).
-// Si texto es null, quita el aviso. boton = {texto, accion}.
+// Si texto es null, quita el aviso. boton = {texto, accion} o una lista de ellos.
 export function avisoFijo(id, texto, boton, clase = '') {
   const caja = document.getElementById('avisos');
   let el = document.getElementById('aviso-' + id);
@@ -108,9 +108,9 @@ export function avisoFijo(id, texto, boton, clase = '') {
   if (!el) { el = document.createElement('div'); el.id = 'aviso-' + id; caja.appendChild(el); }
   el.className = 'aviso-barra ' + clase;
   el.innerHTML = `<span>${texto}</span>`;
-  if (boton) {
+  for (const bt of [].concat(boton || [])) {
     const b = document.createElement('button');
-    b.className = 'mini'; b.textContent = boton.texto; b.onclick = boton.accion;
+    b.className = 'mini' + (bt.clase ? ' ' + bt.clase : ''); b.textContent = bt.texto; b.onclick = bt.accion;
     el.appendChild(b);
   }
 }

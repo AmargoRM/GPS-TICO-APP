@@ -16,6 +16,7 @@ import { panelPuntos, panelPunto, panelElemento, dejarDeNavegar } from './puntos
 import { panelCapas, cargarCapasURLVisibles } from './capas.js';
 import { panelExportar } from './exportar.js';
 import { panelAjustes, pedirPersistencia, revisarAvisoCopia } from './ajustes.js';
+import { iniciarInstalacion } from './instalar.js';
 
 async function iniciar() {
   // 1. Datos guardados
@@ -50,8 +51,9 @@ async function iniciar() {
   document.addEventListener('datos-cambiados', revisarAvisoCopia);
   estadoRed();
 
-  // 4. Service worker
+  // 4. Service worker y botón "Instalar app"
   registrarServiceWorker();
+  iniciarInstalacion();
 
   // 5. Botones
   conectarBotones();

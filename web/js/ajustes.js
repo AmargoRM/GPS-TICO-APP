@@ -10,6 +10,7 @@ import { PROY } from './geodesia.js';
 import { pedirDibujo } from './mapa.js';
 import { actualizarBarra } from './gps.js';
 import { cargarCapasURLVisibles } from './capas.js';
+import { estaInstalada, instalar } from './instalar.js';
 
 const DIAS_AVISO_COPIA = 7;
 
@@ -139,6 +140,10 @@ export async function panelAjustes() {
     Lambert usa el cambio de datum Helmert de 7 parámetros (igual que el GPS TICO original). El método oficial del IGN
     puede diferir de 1 a varios metros: no lo uses para catastro sin verificar.</div>
 
+    <h4>Instalación</h4>
+    ${estaInstalada() ? '<div class="nota ok">✔ Estás usando la app instalada.</div>'
+      : '<div class="nota aviso">Estás usando la app desde el navegador. Instalala para abrirla sin internet desde un ícono.</div><button class="ancho" id="sInstalar">Instalar app</button>'}
+
     <h4>Almacenamiento persistente</h4>
     ${persist}
     ${al.persistente !== true ? '<button class="ancho borde" id="sPersist">Pedir de nuevo</button>' : ''}
@@ -158,6 +163,8 @@ export async function panelAjustes() {
     <div class="nota">GPS TICO Web · versión ${esc(version)}<br>Tus datos quedan solo en este celular. No hay servidor ni cuenta.</div>
     <button class="ancho borde" id="sBuscarVer">Buscar actualización</button>`);
 
+  const bi = cuerpo.querySelector('#sInstalar');
+  if (bi) bi.onclick = instalar;
   cuerpo.querySelector('#sProy').onchange = async e => { await cambiarAjuste('proyeccion', e.target.value); actualizarBarra(); };
   const bp = cuerpo.querySelector('#sPersist');
   if (bp) bp.onclick = async () => { const r = await pedirPersistencia(); toast(r ? 'Concedido.' : 'El navegador no lo concedió.'); panelAjustes(); };
