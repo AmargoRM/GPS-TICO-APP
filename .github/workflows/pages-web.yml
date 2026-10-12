@@ -1,0 +1,58 @@
+# Publica GPS TICO Web (carpeta web/) en GitHub Pages.
+# Corre solo cuando cambia algo dentro de web/ en la rama de trabajo,
+# y también a mano desde la pestaña Actions (botón "Run workflow").
+# No toca la app Android ni su compilación.
+name: Publicar GPS TICO Web
+
+on:
+  push:
+    branches:
+      - claude/zen-bell-3wevre
+    paths:
+      - 'web/**'
+      - '.github/workflows/pages-web.yml'
+  workflow_dispatch:
+
+# Permisos mínimos: leer el código y publicar en Pages.
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# Si hay dos publicaciones seguidas, gana la última.
+concurrency:
+  group: pages-web
+  cancel-in-progress: true
+
+jobs:
+  publicar:
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.despliegue.outputs.page_url }}
+    steps:
+      - name: Traer el código
+        uses: actions/checkout@v4
+
+      - name: Probar las fórmulas y la copia de seguridad antes de publicar
+        run: |
+          node web/pruebas/geodesia.test.mjs
+          node web/pruebas/copia.test.mjs
+
+      - name: Preparar solo los archivos de la app (sin pruebas)
+        run: |
+          mkdir _sitio
+          cp -r web/. _sitio/
+          rm -rf _sitio/pruebas _sitio/package.json
+
+      - name: Configurar Pages
+        uses: actions/configure-pages@v5
+
+      - name: Subir los archivos
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: _sitio
+
+      - name: Publicar
+        id: despliegue
+        uses: actions/deploy-pages@v4
