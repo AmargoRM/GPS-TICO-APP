@@ -1,8 +1,9 @@
 /* =======================================================================
    PIEZAS DE PANTALLA REUTILIZABLES
-   Avisos cortos (toast), panel deslizable, diálogos de confirmación y
-   descarga de archivos.
+   Avisos cortos (toast), panel deslizable, diálogos de confirmación,
+   aviso "cargando" y descarga de archivos.
    ======================================================================= */
+import { esIOS, enModoApp } from './compat.js';
 
 // Escapa texto para meterlo en HTML sin riesgo (nombres, notas, etc.).
 export function esc(t) {
@@ -68,14 +69,44 @@ export function alerta(titulo, html) {
   return dialogo({ titulo, html, botones: [{ texto: 'Entendido', valor: true }] });
 }
 
-// Descarga un archivo generado en el celular (no sube nada a internet).
-export function descargar(nombre, contenido, tipo) {
+// Guarda un archivo generado en el celular (no sube nada a internet).
+// - iPhone/iPad (y apps instaladas que lo permiten): abre el menú "Compartir"
+//   (Guardar en Archivos, AirDrop, correo, WhatsApp…). Es lo que funciona bien
+//   en Safari y en la app instalada.
+// - Resto: descarga normal a la carpeta Descargas.
+export async function descargar(nombre, contenido, tipo) {
+  nombre = nombre.replace(/[^\w\-. áéíóúñÁÉÍÓÚÑ]/g, '_');
   const blob = contenido instanceof Blob ? contenido : new Blob([contenido], { type: tipo });
+  const usarCompartir = (esIOS || enModoApp()) && typeof File !== 'undefined' && navigator.canShare;
+  if (usarCompartir) {
+    const archivo = new File([blob], nombre, { type: tipo || blob.type || 'application/octet-stream' });
+    if (navigator.canShare({ files: [archivo] })) {
+      const compartir = () => navigator.share({ files: [archivo], title: nombre });
+      try { await compartir(); return; }
+      catch (e) {
+        if (e && e.name === 'AbortError') return;   // el usuario cerró el menú
+        // Safari exige un toque directo: pedimos uno con un botón.
+        const si = await dialogo({ titulo: 'Archivo listo', html: `<b>${esc(nombre)}</b><br>Tocá "Guardar" y elegí <b>Guardar en Archivos</b> o la app donde lo querés.`,
+          botones: [{ texto: 'Cancelar', valor: false, clase: 'borde' }, { texto: 'Guardar', valor: true }] });
+        if (!si) return;
+        try { await compartir(); return; } catch (e2) { if (e2 && e2.name === 'AbortError') return; }
+      }
+    }
+  }
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
   a.href = url; a.download = nombre;
   document.body.appendChild(a); a.click(); a.remove();
   setTimeout(() => URL.revokeObjectURL(url), 60000);
+}
+
+// Aviso "Cargando…" que tapa la pantalla. cargando(null) lo quita.
+export function cargando(texto) {
+  const el = document.getElementById('cargando');
+  if (!el) return;
+  if (texto == null) { el.hidden = true; return; }
+  el.querySelector('.txt').textContent = texto;
+  el.hidden = false;
 }
 
 // Fecha y hora legibles en español de Costa Rica.
@@ -97,6 +128,13 @@ export function elegirArchivo(accept) {
     inp.onchange = () => resolver(inp.files && inp.files[0] ? inp.files[0] : null);
     inp.click();
   });
+}
+
+// Altura de los avisos de arriba → variable CSS (el panel se acomoda debajo).
+if (typeof ResizeObserver !== 'undefined') {
+  const medirAvisos = () => { const el = document.getElementById('avisos'); if (el) document.documentElement.style.setProperty('--alto-avisos', el.getBoundingClientRect().bottom + 'px'); };
+  document.addEventListener('DOMContentLoaded', () => { const el = document.getElementById('avisos'); if (el) new ResizeObserver(medirAvisos).observe(el); medirAvisos(); });
+  if (document.readyState !== 'loading') setTimeout(() => { const el = document.getElementById('avisos'); if (el) { new ResizeObserver(medirAvisos).observe(el); medirAvisos(); } }, 0);
 }
 
 // Aviso fijo arriba de la pantalla (copia vieja, versión nueva, etc.).

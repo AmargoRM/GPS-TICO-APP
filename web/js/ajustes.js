@@ -3,14 +3,15 @@
    borrar todo y versión de la app.
    ======================================================================= */
 import { S, cambiarAjuste, cargarTodo } from './estado.js';
-import { vaciarTodo, reemplazarTodo } from './bd.js';
+import { vaciarTodo, reemplazarTodo, contar } from './bd.js';
 import { abrirPanel, cerrarPanel, toast, esc, confirmar, alerta, dialogo, descargar, fechaTexto, fechaArchivo, elegirArchivo, avisoFijo } from './ui.js';
 import { crearCopia, validarCopia, prepararRestauracion } from './copia.js';
 import { PROY } from './geodesia.js';
-import { pedirDibujo } from './mapa.js';
+import { pedirDibujo, borrarTeselasMemoria } from './mapa.js';
 import { actualizarBarra } from './gps.js';
-import { cargarCapasURLVisibles } from './capas.js';
+import { completarCapasURL } from './capas.js';
 import { estaInstalada, instalar } from './instalar.js';
+import { esIOS } from './compat.js';
 
 const DIAS_AVISO_COPIA = 7;
 
@@ -45,11 +46,12 @@ export function revisarAvisoCopia() {
 /* --- Descargar copia --- */
 export async function descargarCopia() {
   try {
-    const copia = await crearCopia(S.capas, S.puntos, S.ajustes);
-    descargar(`gps-tico-web-copia-${fechaArchivo()}.json`, JSON.stringify(copia), 'application/json');
+    const { copia, omitidas } = await crearCopia(S.capas, S.puntos, S.ajustes);
+    await descargar(`gps-tico-web-copia-${fechaArchivo()}.json`, JSON.stringify(copia), 'application/json');
     await cambiarAjuste('ultimaCopia', new Date().toISOString());
     revisarAvisoCopia();
-    toast('Copia descargada. Guardala fuera del celular (correo, nube, computadora).', 6000);
+    if (omitidas.length) alerta('Copia descargada (con una excepción)', `Las capas grandes no entran en la copia: <b>${omitidas.map(esc).join(', ')}</b>.<br>Guardá sus archivos originales para poder cargarlas de nuevo.`);
+    else toast('Copia descargada. Guardala fuera del celular (correo, nube, computadora).', 6000);
   } catch (e) {
     alerta('No se pudo crear la copia', esc(e.message || e));
   }
@@ -72,19 +74,20 @@ async function restaurarCopia() {
     return;
   }
   const s = r.resumen;
+  const grandes = S.capas.filter(c => c.tipo === 'grande').length;
   const si = await confirmar('Restaurar copia',
     `Copia del <b>${fechaTexto(s.fecha)}</b>: ${s.capas} capa(s), ${s.puntos} punto(s), ${s.fotos} foto(s).<br><br>
      Esto <b>reemplaza todo</b> lo que hay ahora en el celular (${S.capas.length} capa(s), ${S.puntos.length} punto(s)).
-     Lo actual se pierde. Si querés conservarlo, cancelá y descargá primero una copia.`, 'Reemplazar todo', 'Cancelar', true);
+     Lo actual se pierde${grandes ? ` (incluidas ${grandes} capa(s) grande(s), que no viajan en las copias)` : ''}. Si querés conservarlo, cancelá y descargá primero una copia.`, 'Reemplazar todo', 'Cancelar', true);
   if (!si) return;
   try {
-    await reemplazarTodo(prepararRestauracion(obj));
+    await reemplazarTodo(prepararRestauracion(r.normalizada));
   } catch (e) {
     alerta('No se pudo restaurar', 'Hubo un error al guardar (' + esc(e.message || e) + '). La operación es "todo o nada": tus datos anteriores no se tocaron.');
     return;
   }
   await cargarTodo();
-  cargarCapasURLVisibles(pedirDibujo);
+  completarCapasURL();
   actualizarBarra(); pedirDibujo(); revisarAvisoCopia();
   cerrarPanel();
   toast(`Copia restaurada: ${S.capas.length} capa(s) y ${S.puntos.length} punto(s).`, 5000);
@@ -104,6 +107,7 @@ async function borrarTodo() {
   if (dos.texto.trim() !== 'BORRAR') { alerta('No se borró nada', 'El texto no coincide con BORRAR.'); return; }
   await vaciarTodo();
   await cargarTodo();
+  borrarTeselasMemoria();
   S.destino = null; document.getElementById('navCaja').hidden = true;
   actualizarBarra(); pedirDibujo(); revisarAvisoCopia();
   cerrarPanel();
@@ -127,15 +131,21 @@ export async function versionApp() {
 export async function panelAjustes() {
   const al = await estadoAlmacenamiento();
   const version = await versionApp();
+  const nTeselas = await contar('teselas').catch(() => 0);
   const opcProy = Object.entries(PROY).map(([k, p]) =>
     `<option value="${k}" ${S.ajustes.proyeccion === k ? 'selected' : ''}>${p.largo}</option>`).join('');
   const persist = al.persistente === true ? '<div class="nota ok">✔ <b>Concedido.</b> El navegador no va a borrar tus datos por falta de espacio.</div>'
     : al.persistente === false ? '<div class="nota aviso">✖ <b>No concedido.</b> Si el celular se queda sin espacio, el navegador podría borrar los datos. Instalá la app (Agregar a pantalla de inicio) y tocá "Pedir de nuevo". Descargá copias seguido.</div>'
     : '<div class="nota aviso">Este navegador no informa si el almacenamiento es persistente. Descargá copias seguido.</div>';
+  const notaIOS = esIOS ? `<div class="nota ${estaInstalada() ? 'ok' : 'mal'}"><b>iPhone:</b> ${estaInstalada()
+    ? 'como la usás instalada (desde el ícono), Safari no borra los datos por falta de uso.'
+    : 'si la usás desde Safari sin instalar, Safari puede BORRAR los datos después de unos 7 días sin abrirla. Instalala: Compartir → "Agregar a inicio".'}</div>` : '';
 
   const cuerpo = abrirPanel('Ajustes', `
     <label>Sistema de coordenadas en pantalla</label>
     <select id="sProy">${opcProy}</select>
+    <label>Radio de "Consultar aquí" (mantener presionado)</label>
+    <select id="sRadio">${[10, 30, 50, 100, 250].map(r => `<option value="${r}" ${S.ajustes.radioConsulta === r ? 'selected' : ''}>${r} m</option>`).join('')}</select>
     <div class="nota">Los puntos siempre guardan X/Y en CRTM05 además de latitud/longitud.
     Lambert usa el cambio de datum Helmert de 7 parámetros (igual que el GPS TICO original). El método oficial del IGN
     puede diferir de 1 a varios metros: no lo uses para catastro sin verificar.</div>
@@ -146,14 +156,15 @@ export async function panelAjustes() {
 
     <h4>Almacenamiento persistente</h4>
     ${persist}
+    ${notaIOS}
     ${al.persistente !== true ? '<button class="ancho borde" id="sPersist">Pedir de nuevo</button>' : ''}
-    <div class="nota">Espacio usado por la app: <b>${mb(al.usado)}</b>${al.cuota ? ` de ${mb(al.cuota)} disponibles` : ''}.</div>
+    <div class="nota">Espacio usado por la app: <b>${mb(al.usado)}</b>${al.cuota ? ` de ${mb(al.cuota)} disponibles` : ''} · ${nTeselas} cuadritos de mapa guardados (se manejan en Menú → Mapa sin conexión).</div>
 
     <h4>Copia de seguridad</h4>
     <div class="nota ${S.ajustes.ultimaCopia ? '' : 'aviso'}">Última copia descargada: <b>${S.ajustes.ultimaCopia ? fechaTexto(S.ajustes.ultimaCopia) : 'nunca'}</b></div>
     <button class="ancho" id="sDescargar">Descargar copia</button>
     <button class="ancho borde" id="sRestaurar">Restaurar copia</button>
-    <div class="nota">La copia es un archivo .json con todas las capas, puntos (con fotos) y ajustes.
+    <div class="nota">La copia es un archivo .json con las capas, los puntos (con fotos), las plantillas y los ajustes. No incluye las capas grandes ni el mapa de fondo guardado.
     Guardala fuera del celular. Restaurar revisa el archivo primero; si tiene problemas, no cambia nada.</div>
 
     <h4>Zona peligrosa</h4>
@@ -166,6 +177,7 @@ export async function panelAjustes() {
   const bi = cuerpo.querySelector('#sInstalar');
   if (bi) bi.onclick = instalar;
   cuerpo.querySelector('#sProy').onchange = async e => { await cambiarAjuste('proyeccion', e.target.value); actualizarBarra(); };
+  cuerpo.querySelector('#sRadio').onchange = e => cambiarAjuste('radioConsulta', +e.target.value);
   const bp = cuerpo.querySelector('#sPersist');
   if (bp) bp.onclick = async () => { const r = await pedirPersistencia(); toast(r ? 'Concedido.' : 'El navegador no lo concedió.'); panelAjustes(); };
   cuerpo.querySelector('#sDescargar').onclick = async () => { await descargarCopia(); panelAjustes(); };

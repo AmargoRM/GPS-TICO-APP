@@ -7,7 +7,7 @@
    IMPORTANTE para publicar una versión nueva: cambiar el número de VERSION.
    Así el celular detecta el cambio y la app muestra "Hay una versión nueva".
    ======================================================================= */
-const VERSION = '1.1.0';
+const VERSION = '2.1.0';
 const CACHE = 'gps-tico-web-' + VERSION;
 
 // Todos los archivos que forman la app (rutas relativas a esta carpeta).
@@ -21,6 +21,7 @@ const ARCHIVOS = [
   'iconos/icono-512.png',
   'iconos/icono-maskable-512.png',
   'js/app.js',
+  'js/compat.js',
   'js/estado.js',
   'js/ui.js',
   'js/geodesia.js',
@@ -34,7 +35,15 @@ const ARCHIVOS = [
   'js/exportar.js',
   'js/copia.js',
   'js/ajustes.js',
-  'js/instalar.js'
+  'js/instalar.js',
+  'js/grandes.js',
+  'js/consulta.js',
+  'js/herramientas.js',
+  'js/plantillas.js',
+  'js/exportar-mapa.js',
+  'js/offline.js',
+  'js/menu.js',
+  'js/filtros.js'
 ];
 
 // Instalación: descarga y guarda todos los archivos. Si falta uno, no se instala
@@ -63,6 +72,23 @@ self.addEventListener('message', ev => {
 // Lo de afuera (fondos de mapa, capas por URL) va directo a internet.
 self.addEventListener('fetch', ev => {
   const req = ev.request;
+  // Archivos compartidos desde otra app (Android: Compartir → GPS TICO):
+  // se guardan un momento y se abre la app para que los importe.
+  if (req.method === 'POST' && new URL(req.url).pathname.endsWith('/compartir')) {
+    ev.respondWith((async () => {
+      try {
+        const datos = await req.formData();
+        const cache = await caches.open('gps-tico-compartidos');
+        let i = 0;
+        for (const f of datos.getAll('archivos')) {
+          if (!(f instanceof File)) continue;
+          await cache.put(new Request(`compartido-${Date.now()}-${i++}`), new Response(f, { headers: { 'Content-Type': f.type || 'application/octet-stream', 'X-Nombre': encodeURIComponent(f.name) } }));
+        }
+      } catch (e) { /* si falla, la app abre igual */ }
+      return Response.redirect('./?compartido=1', 303);
+    })());
+    return;
+  }
   if (req.method !== 'GET') return;
   const url = new URL(req.url);
   if (url.origin !== self.location.origin) return;   // externo: no se toca

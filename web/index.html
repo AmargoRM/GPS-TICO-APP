@@ -2,31 +2,46 @@
 <html lang="es">
 <head>
   <meta charset="utf-8">
+  <!-- viewport-fit=cover: usa toda la pantalla del iPhone (muesca y barra de abajo incluidas). -->
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <meta name="theme-color" content="#0A1214">
+  <meta name="color-scheme" content="dark">
   <meta name="description" content="GPS de campo para Costa Rica: CRTM05, Lambert, capas y puntos. Funciona sin conexión.">
+  <!-- Evita que el iPhone convierta números (coordenadas) en enlaces de teléfono. -->
+  <meta name="format-detection" content="telephone=no">
   <title>GPS TICO Web</title>
   <!-- Manifiesto: le dice al celular cómo instalar la app (nombre, ícono, colores). -->
   <link rel="manifest" href="manifest.webmanifest">
   <link rel="icon" href="iconos/icono-192.png">
+  <!-- iPhone: ícono, nombre y barra de estado al instalar con "Agregar a inicio". -->
   <link rel="apple-touch-icon" href="iconos/icono-180.png">
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-title" content="GPS TICO">
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
   <link rel="stylesheet" href="estilos.css">
   <script type="module" src="js/app.js"></script>
 </head>
 <body>
-  <!-- Avisos fijos arriba: copia vieja, versión nueva, sin conexión. -->
+  <!-- Avisos fijos arriba: copia vieja, versión nueva, sin conexión, instalar. -->
   <div id="avisos"></div>
 
-  <!-- Barra superior: coordenadas de mi posición en el sistema elegido. -->
+  <!-- Barra superior (como Android): sistema, coordenadas, precisión, altura y velocidad. -->
   <header id="barra">
-    <button id="btnProy" class="coord" aria-label="Cambiar sistema de coordenadas">
-      <span class="sis">CRTM05</span>
-      <span class="xy"><span id="cA">Buscando GPS…</span><span id="cB"></span></span>
-    </button>
-    <div id="precision" class="prec" title="Precisión del GPS">— m</div>
+    <div id="sistemas" role="group" aria-label="Sistema de coordenadas">
+      <button data-m="geo" aria-pressed="false">GEO</button>
+      <button data-m="crtm05" aria-pressed="true">CRTM05</button>
+      <button data-m="ln" aria-pressed="false">LAM·N</button>
+      <button data-m="ls" aria-pressed="false">LAM·S</button>
+    </div>
+    <div class="lectura">
+      <div class="xy"><span id="cA">Buscando GPS…</span><span id="cB"></span></div>
+      <div class="metricas">
+        <div id="precision" class="prec" title="Precisión del GPS">— m</div>
+        <div class="met"><span id="mAlt">—</span><small>altura</small></div>
+        <div class="met"><span id="mVel">—</span><small>velocidad</small></div>
+      </div>
+    </div>
   </header>
 
   <!-- Mapa -->
@@ -37,7 +52,11 @@
       <button id="btnMenos" aria-label="Alejar">−</button>
       <button id="btnYo" aria-label="Ir a mi posición">◎</button>
       <button id="btnFondo" aria-label="Cambiar fondo">▦</button>
+      <button id="btnMedir" aria-label="Medir">📏</button>
+      <button id="btnNav" aria-label="Navegar">🧭</button>
     </div>
+    <!-- Barra de la herramienta activa (medir / navegar) -->
+    <div id="herramienta" hidden><div class="txt"></div><div class="botones"></div></div>
     <!-- Caja de navegación hacia un punto -->
     <div id="navCaja" hidden>
       <div class="flecha" id="navFlecha">↑</div>
@@ -48,16 +67,29 @@
       </div>
       <button id="navCerrar" aria-label="Dejar de navegar">✕</button>
     </div>
+    <!-- Tabla al costado con varios elementos consultados -->
+    <aside id="tablaLat" hidden>
+      <header><h3>Elementos consultados</h3><button id="tablaLatCerrar" aria-label="Cerrar">✕</button></header>
+      <div class="cuerpo"></div>
+    </aside>
   </main>
 
-  <!-- Botonera inferior -->
+  <!-- Botonera inferior (como Android) -->
   <nav id="abajo">
     <button id="btnCapas"><span class="ic">◧</span>Capas</button>
     <button id="btnPuntos"><span class="ic">⌖</span>Puntos</button>
-    <button id="btnCapturar" class="grande"><span class="ic">●</span>Capturar</button>
-    <button id="btnExportar"><span class="ic">⇩</span>Exportar</button>
-    <button id="btnAjustes"><span class="ic">⚙</span>Ajustes</button>
+    <button id="btnCapturar" class="grande"><span class="ic">●</span>Marcar punto</button>
+    <button id="btnMenu"><span class="ic">☰</span>Menú</button>
   </nav>
+
+  <!-- Menú al mantener presionado el mapa -->
+  <div id="menuMantener" hidden>
+    <div class="fondo"></div>
+    <div class="opciones">
+      <button id="mmConsultar"><span class="ic">🔍</span>Consultar<span class="s">(30 m)</span></button>
+      <button id="mmChincheta"><span class="ic">📍</span>Chincheta</button>
+    </div>
+  </div>
 
   <!-- Panel deslizable (capas, puntos, ajustes…) -->
   <section id="panel" hidden>
@@ -76,6 +108,9 @@
       <div class="botones"></div>
     </div>
   </div>
+
+  <!-- Aviso "Cargando…" -->
+  <div id="cargando" hidden><div class="caja"><div class="giro"></div><div class="txt">Cargando…</div></div></div>
 
   <div id="toast" role="status"></div>
 </body>

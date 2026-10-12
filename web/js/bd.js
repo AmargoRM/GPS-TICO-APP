@@ -2,16 +2,21 @@
    BASE DE DATOS EN EL CELULAR (IndexedDB)
    Todo se guarda solo en este navegador/celular. No hay servidor.
 
-   Tres "cajones" (almacenes):
-   - capas   : capas de mapa. Las de archivo con su contenido completo;
-               las de URL solo con la dirección y el nombre.
-   - puntos  : puntos capturados con el GPS (con foto opcional).
+   Tres "cajones" (almacenes) con los datos del usuario:
+   - capas   : capas de mapa con su contenido completo (las de URL también,
+               como en la app Android, para verlas sin internet).
+   - puntos  : puntos capturados (con fotos y datos de plantilla).
    - ajustes : preferencias sueltas, guardadas como clave → valor.
+   Cajones auxiliares (versión 2):
+   - bigprops: atributos de capas grandes, en bloques de 1000 ("idCapa:bloque").
+   - teselas : cuadritos de imagen del mapa ya vistos o descargados (sin conexión).
+   - zonas   : zonas de mapa descargadas a propósito para usar sin conexión.
    ======================================================================= */
 
 const NOMBRE_BD = 'gps-tico-web';   // distinto al original, para que nunca se mezclen
-const VERSION_BD = 1;
-export const CAJONES = ['capas', 'puntos', 'ajustes'];
+const VERSION_BD = 2;
+export const CAJONES = ['capas', 'puntos', 'ajustes'];          // datos del usuario (van en la copia)
+export const AUXILIARES = ['bigprops', 'teselas', 'zonas'];     // datos de apoyo
 
 let bd = null;
 
@@ -24,6 +29,9 @@ export function abrirBD() {
       if (!d.objectStoreNames.contains('capas')) d.createObjectStore('capas', { keyPath: 'id' });
       if (!d.objectStoreNames.contains('puntos')) d.createObjectStore('puntos', { keyPath: 'id' });
       if (!d.objectStoreNames.contains('ajustes')) d.createObjectStore('ajustes');   // clave aparte
+      if (!d.objectStoreNames.contains('bigprops')) d.createObjectStore('bigprops');
+      if (!d.objectStoreNames.contains('teselas')) d.createObjectStore('teselas');
+      if (!d.objectStoreNames.contains('zonas')) d.createObjectStore('zonas', { keyPath: 'id' });
     };
     pedido.onsuccess = () => { bd = pedido.result; resolver(bd); };
     pedido.onerror = () => rechazar(pedido.error);
@@ -64,19 +72,33 @@ export async function leerAjustes() {
   return out;
 }
 
-// Borra TODO (los tres cajones) en una sola transacción.
+export const contar = (c) => esperar(cajon(c).count());
+export const vaciar = (c) => esperar(cajon(c, 'readwrite').clear());
+
+// Borra todas las claves que empiezan con un prefijo (ej. atributos de una capa grande).
+export function borrarPrefijo(c, prefijo) {
+  return new Promise(ok => {
+    const pedido = cajon(c, 'readwrite').openCursor(IDBKeyRange.bound(prefijo, prefijo + '\uffff'));
+    pedido.onsuccess = () => { const cur = pedido.result; if (cur) { cur.delete(); cur.continue(); } else ok(); };
+    pedido.onerror = () => ok();
+  });
+}
+
+// Borra TODO (datos y cajones de apoyo) en una sola transacción.
 export async function vaciarTodo() {
-  const tx = bd.transaction(CAJONES, 'readwrite');
-  for (const c of CAJONES) tx.objectStore(c).clear();
+  const todos = [...CAJONES, ...AUXILIARES];
+  const tx = bd.transaction(todos, 'readwrite');
+  for (const c of todos) tx.objectStore(c).clear();
   await terminar(tx);
 }
 
 // Reemplaza TODO por los datos de una copia, en una sola transacción:
 // si algo falla a la mitad, el navegador deshace todo y quedan los datos de antes.
 export async function reemplazarTodo({ capas, puntos, ajustes }) {
-  const tx = bd.transaction(CAJONES, 'readwrite');
+  const tx = bd.transaction([...CAJONES, 'bigprops'], 'readwrite');
   const sc = tx.objectStore('capas'), sp = tx.objectStore('puntos'), sa = tx.objectStore('ajustes');
   sc.clear(); sp.clear(); sa.clear();
+  tx.objectStore('bigprops').clear();   // las capas grandes no viajan en la copia
   for (const c of capas) sc.put(c);
   for (const p of puntos) sp.put(p);
   for (const [k, v] of Object.entries(ajustes)) sa.put(v, k);

@@ -1,6 +1,7 @@
 /* =======================================================================
    IMPORTAR ARCHIVOS → GeoJSON en WGS84 (lat/lon)
-   Formatos: GeoJSON, KML, KMZ, GPX, CSV con X/Y y shapefile dentro de ZIP.
+   Formatos: GeoJSON, KML, KMZ, GPX, CSV con X/Y, DXF (CAD), shapefile
+   dentro de ZIP y .shp suelto.
    Todo se lee en el celular, sin internet y sin librerías.
    KML, ZIP y shapefile copiados del GPS TICO original; CSV es nuevo.
 
@@ -12,32 +13,35 @@ import { haciaWgs, dentroCR, PROY } from './geodesia.js';
 export const TAMANO_AVISO = 50 * 1024 * 1024;   // 50 MB: avisar antes de cargar
 
 // Punto de entrada: recibe un File y el sistema elegido ('auto' o uno fijo).
-// Devuelve { fc, nombre, aviso }.
+// Devuelve { fc, nombre, aviso, proyFuente } (proyFuente = sistema en que venía).
 export async function leerArchivo(archivo, sistema = 'auto') {
   const nombre = archivo.name.replace(/\.[^.]+$/, '');
-  const ext = (archivo.name.match(/\.([^.]+)$/) || [])[1]?.toLowerCase() || '';
-  let fc, avisoProy = '';
-
-  if (ext === 'zip' || ext === 'kmz') {
-    const r = await zipAGeoJSON(await archivo.arrayBuffer());
-    fc = r.fc; avisoProy = r.aviso;
-  } else {
+  const ext = extension(archivo.name);
+  let r;
+  if (ext === 'dwg') throw new Error('DWG es un formato cerrado de AutoCAD y no se puede leer. Guardalo como DXF (AutoCAD, QGIS o ODA File Converter) y cargá el .dxf.');
+  if (ext === 'zip' || ext === 'kmz') r = await zipAGeoJSON(await archivo.arrayBuffer());
+  else if (ext === 'shp') r = shpAGeoJSON(await archivo.arrayBuffer(), null, null);
+  else {
     const texto = await archivo.text();
-    if (ext === 'kml' || /<kml[\s>]/i.test(texto.slice(0, 2000))) fc = kmlAGeoJSON(texto);
-    else if (ext === 'gpx' || /<gpx[\s>]/i.test(texto.slice(0, 2000))) fc = gpxAGeoJSON(texto);
-    else if (ext === 'csv' || ext === 'txt') {
-      const r = csvAGeoJSON(texto, sistema); fc = r.fc; avisoProy = r.aviso;
-    } else {
+    const ini = texto.slice(0, 4000);
+    if (ext === 'kml' || /<kml[\s>]/i.test(ini)) r = { fc: kmlAGeoJSON(texto), aviso: '', modo: 'geo' };
+    else if (ext === 'gpx' || /<gpx[\s>]/i.test(ini)) r = { fc: gpxAGeoJSON(texto), aviso: '', modo: 'geo' };
+    else if (ext === 'dxf' || /\bENTITIES\b|AutoCAD|LWPOLYLINE/.test(ini)) {
+      const fc = dxfAGeoJSON(texto);
+      r = { fc, ...ajustarProyeccion(fc, sistema, null) };
+    } else if (ext === 'csv' || ext === 'txt') r = csvAGeoJSON(texto, sistema);
+    else {
       let obj;
       try { obj = JSON.parse(texto); }
-      catch (e) { throw new Error('El archivo no es un GeoJSON válido (no se pudo leer como JSON).'); }
-      fc = normalizarGeoJSON(obj);
-      avisoProy = ajustarProyeccion(fc, sistema, sistemaDeCRS(obj));
+      catch (e) { throw new Error('No se reconoce el formato. Usá GeoJSON, KML, KMZ, GPX, CSV, DXF, SHP o ZIP.'); }
+      const fc = normalizarGeoJSON(obj);
+      r = { fc, ...ajustarProyeccion(fc, sistema, sistemaDeCRS(obj)) };
     }
   }
-  if (!fc.features.length) throw new Error('El archivo no tiene elementos con coordenadas.');
-  return { fc, nombre, aviso: avisoProy };
+  if (!r.fc.features.length) throw new Error('El archivo no tiene elementos con coordenadas.');
+  return { fc: r.fc, nombre, aviso: r.aviso, proyFuente: r.modo || 'geo' };
 }
+export const extension = n => ((n || '').match(/\.([^.]+)$/) || [])[1]?.toLowerCase() || '';
 
 /* --- GeoJSON --- */
 // Acepta FeatureCollection, Feature o geometría suelta y devuelve FeatureCollection.
@@ -96,13 +100,14 @@ export function reproyectar(fc, modo) {
     else if (g.coordinates) rec(g.coordinates);
   }
 }
-// Decide el sistema (elegido, del archivo o adivinado), convierte y devuelve un aviso.
-function ajustarProyeccion(fc, sistema, delArchivo) {
+// Decide el sistema (elegido, del archivo o adivinado), convierte y devuelve
+// { aviso, modo } (modo = sistema en que venían las coordenadas).
+export function ajustarProyeccion(fc, sistema, delArchivo) {
   let modo = sistema !== 'auto' ? sistema : delArchivo;
   let aviso = '';
   if (!modo) {
     const c = primeraCoord(fc);
-    if (!c) return '';
+    if (!c) return { aviso: '', modo: 'geo' };
     const r = adivinarSistema(c[0], c[1]);
     modo = r.modo;
     if (modo !== 'geo') aviso = r.seguro
@@ -110,7 +115,7 @@ function ajustarProyeccion(fc, sistema, delArchivo) {
       : 'No reconocí el sistema de coordenadas; asumí CRTM05. Si la capa aparece fuera de lugar, borrala y cargala eligiendo el sistema a mano.';
   }
   reproyectar(fc, modo);
-  return aviso;
+  return { aviso, modo };
 }
 
 /* --- KML (copiado del original) --- */
@@ -231,9 +236,10 @@ export function csvAGeoJSON(texto, sistema = 'auto') {
   }
   if (!feats.length) throw new Error('Ninguna fila del CSV tiene números válidos en las columnas de coordenadas.');
   const fc = { type: 'FeatureCollection', features: feats };
-  let aviso = ajustarProyeccion(fc, sistema, sistemaCols);
+  const r = ajustarProyeccion(fc, sistema, sistemaCols);
+  let aviso = r.aviso;
   if (malas) aviso = (aviso ? aviso + ' ' : '') + `${malas} fila(s) sin coordenadas válidas se saltaron.`;
-  return { fc, aviso };
+  return { fc, aviso, modo: r.modo };
 }
 
 /* --- ZIP (copiado del original; usa el descompresor del navegador) --- */
@@ -325,7 +331,7 @@ function shpAGeoJSON(shpBuf, filasDbf, prj) {
     if (geom && tipo !== 0) feats.push({ type: 'Feature', geometry: geom, properties: (filasDbf && filasDbf[idx]) || {} });
     idx++;
   }
-  return { fc: { type: 'FeatureCollection', features: feats }, aviso };
+  return { fc: { type: 'FeatureCollection', features: feats }, aviso, modo };
 }
 // Tabla de atributos (.dbf).
 function dbfLeer(buf) {
@@ -359,11 +365,11 @@ async function zipAGeoJSON(buf) {
   const shp = claves.find(k => /\.shp$/i.test(k));
   if (!shp) {
     const kml = claves.find(k => /\.kml$/i.test(k));
-    if (kml) return { fc: kmlAGeoJSON(new TextDecoder().decode(zip.get(kml))), aviso: '' };
+    if (kml) return { fc: kmlAGeoJSON(new TextDecoder().decode(zip.get(kml))), aviso: '', modo: 'geo' };
     const gj = claves.find(k => /\.(geo)?json$/i.test(k));
     if (gj) {
       const fc = normalizarGeoJSON(JSON.parse(new TextDecoder().decode(zip.get(gj))));
-      return { fc, aviso: ajustarProyeccion(fc, 'auto', null) };
+      return { fc, ...ajustarProyeccion(fc, 'auto', null) };
     }
     throw new Error('El ZIP no trae un shapefile (.shp), ni KML, ni GeoJSON.');
   }
@@ -371,4 +377,56 @@ async function zipAGeoJSON(buf) {
   const buscar = ext => zip.get(base + '.' + ext) || zip.get(base + '.' + ext.toUpperCase());
   const dbf = buscar('dbf'), prj = buscar('prj');
   return shpAGeoJSON(_bufDe(zip.get(shp)), dbf ? dbfLeer(_bufDe(dbf)) : null, prj ? new TextDecoder().decode(prj) : null);
+}
+
+/* --- DXF de CAD (copiado del original) --- */
+// Entidades: LINE, LWPOLYLINE, POLYLINE/VERTEX, POINT, CIRCLE, ARC, TEXT/MTEXT.
+// Coordenadas en metros (después se convierten con la detección de CRTM05/Lambert).
+export function dxfAGeoJSON(texto) {
+  const crudo = texto.split(/\r\n|\r|\n/);
+  const P = []; for (let i = 0; i + 1 < crudo.length; i += 2) { const c = parseInt((crudo[i] || '').trim(), 10); if (!isNaN(c)) P.push([c, crudo[i + 1]]); }
+  let i = 0; for (; i < P.length; i++) { if (P[i][0] === 2 && (P[i][1] || '').trim() === 'ENTITIES') { i++; break; } }
+  if (i >= P.length) i = 0;   // algunos DXF mínimos no marcan la sección
+  const feats = [];
+  const meter = (geom, capa, extra) => { if (geom) feats.push({ type: 'Feature', geometry: geom, properties: Object.assign({ capa_cad: (capa || '0') }, extra || {}) }); };
+  const circulo = (cx, cy, r) => { const a = []; for (let k = 0; k <= 48; k++) { const t = k / 48 * 2 * Math.PI; a.push([cx + r * Math.cos(t), cy + r * Math.sin(t)]); } return a; };
+  const arco = (cx, cy, r, a0, a1) => { const s = a0 * Math.PI / 180; let e = a1 * Math.PI / 180; if (e <= s) e += 2 * Math.PI; const pasos = Math.max(2, Math.ceil((e - s) / (Math.PI / 24))); const a = []; for (let k = 0; k <= pasos; k++) { const t = s + (e - s) * k / pasos; a.push([cx + r * Math.cos(t), cy + r * Math.sin(t)]); } return a; };
+  while (i < P.length) {
+    if (P[i][0] !== 0) { i++; continue; }
+    const et = (P[i][1] || '').trim(); i++;
+    if (et === 'ENDSEC' || et === 'EOF') break;
+    const E = { capa: '0', verts: [] }; let bandera = 0;
+    while (i < P.length && P[i][0] !== 0) {
+      const c = P[i][0], v = P[i][1], nv = parseFloat((v || '').trim());
+      if (c === 8) E.capa = (v || '').trim();
+      else if (c === 10) { if (et === 'LWPOLYLINE') E.verts.push([nv, 0]); else E.x = nv; }
+      else if (c === 20) { if (et === 'LWPOLYLINE') { const a = E.verts[E.verts.length - 1]; if (a) a[1] = nv; } else E.y = nv; }
+      else if (c === 11) E.x1 = nv; else if (c === 21) E.y1 = nv;
+      else if (c === 40) E.r = nv; else if (c === 50) E.a0 = nv; else if (c === 51) E.a1 = nv;
+      else if (c === 70) bandera = nv | 0; else if (c === 1) E.texto = v;
+      i++;
+    }
+    if (et === 'LINE') { if (E.x != null && E.x1 != null) meter({ type: 'LineString', coordinates: [[E.x, E.y], [E.x1, E.y1]] }, E.capa); }
+    else if (et === 'POINT') { if (E.x != null) meter({ type: 'Point', coordinates: [E.x, E.y] }, E.capa); }
+    else if (et === 'TEXT' || et === 'MTEXT') { if (E.x != null) meter({ type: 'Point', coordinates: [E.x, E.y] }, E.capa, { texto: (E.texto || '').trim() }); }
+    else if (et === 'CIRCLE') { if (E.x != null && E.r != null) meter({ type: 'Polygon', coordinates: [circulo(E.x, E.y, E.r)] }, E.capa); }
+    else if (et === 'ARC') { if (E.x != null && E.r != null) meter({ type: 'LineString', coordinates: arco(E.x, E.y, E.r, E.a0 || 0, E.a1 || 0) }, E.capa); }
+    else if (et === 'LWPOLYLINE') {
+      const vs = E.verts.filter(a => isFinite(a[0]) && isFinite(a[1]));
+      if (vs.length >= 2) { if ((bandera & 1) && vs.length >= 3) meter({ type: 'Polygon', coordinates: [[...vs, vs[0]]] }, E.capa); else meter({ type: 'LineString', coordinates: vs }, E.capa); }
+    } else if (et === 'POLYLINE') {
+      const cerrada = (bandera & 1) === 1, capa = E.capa, vs = [];
+      while (i < P.length) {
+        if (P[i][0] === 0) {
+          const t = (P[i][1] || '').trim();
+          if (t === 'VERTEX') { i++; let vx = null, vy = null; while (i < P.length && P[i][0] !== 0) { const c = P[i][0]; const nv = parseFloat((P[i][1] || '').trim()); if (c === 10) vx = nv; else if (c === 20) vy = nv; i++; } if (vx != null && vy != null) vs.push([vx, vy]); }
+          else if (t === 'SEQEND') { i++; while (i < P.length && P[i][0] !== 0) i++; break; }
+          else break;
+        } else i++;
+      }
+      if (vs.length >= 2) { if (cerrada && vs.length >= 3) meter({ type: 'Polygon', coordinates: [[...vs, vs[0]]] }, capa); else meter({ type: 'LineString', coordinates: vs }, capa); }
+    }
+  }
+  if (!feats.length) throw new Error('El DXF no trae entidades reconocibles (LINE, POLYLINE, POINT, CIRCLE, ARC, TEXT).');
+  return { type: 'FeatureCollection', features: feats };
 }

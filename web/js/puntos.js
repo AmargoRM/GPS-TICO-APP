@@ -1,6 +1,6 @@
 /* =======================================================================
-   PUNTOS: lista, detalle, editar, borrar y NAVEGAR hacia un punto
-   (distancia y rumbo desde mi posición actual).
+   PUNTOS: lista por día (como Android), detalle, editar, borrar y
+   NAVEGAR hacia un punto (distancia y rumbo desde mi posición actual).
    ======================================================================= */
 import { S } from './estado.js';
 import { guardar, borrar } from './bd.js';
@@ -9,18 +9,40 @@ import { abrirPanel, cerrarPanel, toast, esc, confirmar, dialogo, fechaTexto } f
 import { pedirDibujo, irA, vista } from './mapa.js';
 import { alCambiarPosicion, textoPrecision } from './gps.js';
 
+const visible = p => p.visible !== false;
+const dia = iso => new Date(iso).toLocaleDateString('es-CR');
+
 export function panelPuntos() {
   const lista = [...S.puntos].sort((a, b) => b.fecha.localeCompare(a.fecha));
-  const cuerpo = abrirPanel(`Puntos (${lista.length})`, lista.length ? `<ul class="lista">${lista.map(p => `
-      <li data-id="${p.id}">
-        <div class="cuerpo-item"><div class="t">${esc(p.nombre)} ${p.foto ? '📷' : ''}</div>
-        <div class="s">${fechaTexto(p.fecha)} · ${textoPrecision(p.precision)} · X ${p.x.toFixed(1)} Y ${p.y.toFixed(1)}</div></div>
-        <button class="mini borde">›</button>
-      </li>`).join('')}</ul>` : '<div class="vacio">Todavía no hay puntos. Usá el botón ● Capturar.</div>');
-  cuerpo.querySelectorAll('li[data-id]').forEach(li => li.onclick = () => panelPunto(S.puntos.find(p => p.id === li.dataset.id)));
+  const grupos = new Map();
+  for (const p of lista) { const d = dia(p.fecha); if (!grupos.has(d)) grupos.set(d, []); grupos.get(d).push(p); }
+  const nVis = lista.filter(visible).length;
+  const modo = S.ajustes.proyeccion;
+  const fila = p => {
+    const c = desdeWgs(p.lat, p.lon, modo === 'geo' ? 'crtm05' : modo);
+    return `<li data-id="${p.id}" class="${visible(p) ? '' : 'apagada'}">
+      <button class="mini ${visible(p) ? '' : 'borde'}" data-vis="${p.id}" aria-label="Ver u ocultar">${visible(p) ? '👁' : '⦸'}</button>
+      <div class="cuerpo-item" data-abrir="${p.id}"><div class="t">${esc(p.nombre)}${p.promediado ? ' ◎' : ''}${p.fotos?.length ? ' 📷' : ''}</div>
+      <div class="s">X ${c.e.toFixed(1)} · Y ${c.n.toFixed(1)} · ${textoPrecision(p.precision)}${p.promediado ? ` · σ±${p.desvStd} m` : ''}${p.nota ? ' · ' + esc(p.nota.slice(0, 40)) : ''}</div></div>
+      <button class="mini borde" data-ir="${p.id}">Ir</button></li>`;
+  };
+  const cuerpo = abrirPanel(`Puntos (${lista.length})`, lista.length ? `
+    <div class="filaCab"><div class="cuerpo-item"><div class="t">Visibles: ${nVis} / ${lista.length}</div><div class="s">Apagá por día o uno por uno</div></div>
+      <button class="mini" id="pTodos">Ver todo</button><button class="mini borde" id="pNinguno">Ocultar</button></div>
+    ${[...grupos].map(([d, ps]) => `<div class="diaCab"><span>${d} · ${ps.length}</span>
+      <button class="mini borde" data-dia="${d}" data-on="${ps.some(visible) ? '0' : '1'}">${ps.some(visible) ? 'Ocultar día' : 'Mostrar día'}</button></div>
+      <ul class="lista">${ps.map(fila).join('')}</ul>`).join('')}`
+    : '<div class="vacio">Todavía no hay puntos. Usá el botón ● Marcar punto.</div>');
+  const fijar = async (ps, v) => { for (const p of ps) { p.visible = v; await guardar('puntos', p); } pedirDibujo(); panelPuntos(); };
+  cuerpo.querySelectorAll('[data-abrir]').forEach(el => el.onclick = () => panelPunto(S.puntos.find(p => p.id === el.dataset.abrir)));
+  cuerpo.querySelectorAll('[data-vis]').forEach(b => b.onclick = () => { const p = S.puntos.find(x => x.id === b.dataset.vis); fijar([p], !visible(p)); });
+  cuerpo.querySelectorAll('[data-ir]').forEach(b => b.onclick = () => { const p = S.puntos.find(x => x.id === b.dataset.ir); cerrarPanel(); S.seguir = false; irA(p.lat, p.lon, 18); });
+  cuerpo.querySelectorAll('[data-dia]').forEach(b => b.onclick = () => fijar(grupos.get(b.dataset.dia), b.dataset.on === '1'));
+  const t = cuerpo.querySelector('#pTodos'); if (t) t.onclick = () => fijar(S.puntos, true);
+  const n = cuerpo.querySelector('#pNinguno'); if (n) n.onclick = () => fijar(S.puntos, false);
 }
 
-// Fila de tabla con las coordenadas de un lat/lon en los 3 sistemas ticos.
+// Filas de tabla con las coordenadas en los 3 sistemas ticos.
 function filasCoords(lat, lon) {
   const ln = desdeWgs(lat, lon, 'ln'), ls = desdeWgs(lat, lon, 'ls'), c = desdeWgs(lat, lon, 'crtm05');
   return `<tr><td>CRTM05 X / Y</td><td>${c.e.toFixed(2)}<br>${c.n.toFixed(2)}</td></tr>
@@ -29,32 +51,39 @@ function filasCoords(lat, lon) {
     <tr><td>Latitud / Longitud</td><td>${lat.toFixed(7)}<br>${lon.toFixed(7)}</td></tr>`;
 }
 
-let urlFoto = null;
+let urlsFotos = [];
+const FUENTE = { gps: 'GPS', manual: 'Coordenadas escritas', chincheta: 'Chincheta' };
 export function panelPunto(p) {
   if (!p) return;
-  if (urlFoto) { URL.revokeObjectURL(urlFoto); urlFoto = null; }
-  if (p.foto) urlFoto = URL.createObjectURL(p.foto);
+  urlsFotos.forEach(u => URL.revokeObjectURL(u));
+  urlsFotos = (p.fotos || []).map(f => URL.createObjectURL(f));
+  const datos = Object.entries(p.datos || {});
   const cuerpo = abrirPanel(p.nombre, `
     <table class="coords">
       ${filasCoords(p.lat, p.lon)}
-      <tr><td>Precisión al capturar</td><td>${textoPrecision(p.precision)}</td></tr>
-      <tr><td>Fecha y hora</td><td>${fechaTexto(p.fecha)}</td></tr>
+      <tr><td>Precisión</td><td>${textoPrecision(p.precision)}</td></tr>
+      <tr><td>Altura (GPS)</td><td>${p.altitud != null ? p.altitud + ' m' : '—'}</td></tr>
+      <tr><td>Tipo</td><td class="texto">${p.promediado ? `Promediado · ${p.muestras} lecturas · σ ±${p.desvStd} m · ${p.duracion} s` : 'Instantáneo'}</td></tr>
+      <tr><td>Fuente</td><td class="texto">${FUENTE[p.fuente] || 'GPS'}</td></tr>
+      <tr><td>Fecha y hora</td><td class="texto">${fechaTexto(p.fecha)}</td></tr>
     </table>
     ${p.nota ? `<div class="nota">${esc(p.nota).replace(/\n/g, '<br>')}</div>` : ''}
-    ${urlFoto ? `<img class="foto" src="${urlFoto}" alt="Foto del punto">` : ''}
+    ${datos.length ? `<h4>📋 ${esc(p.plantilla || 'Formulario')}</h4><table class="coords">${datos.map(([k, v]) => `<tr><td>${esc(k)}</td><td class="texto">${esc(v)}</td></tr>`).join('')}</table>` : ''}
+    ${urlsFotos.length ? `<h4>Fotos (${urlsFotos.length})</h4><div class="fotos">${urlsFotos.map((u, i) => `<img src="${u}" data-foto="${i}" alt="Foto ${i + 1}">`).join('')}</div>` : ''}
     <button class="ancho" id="pNav">➤ Navegar hacia este punto</button>
     <div class="fila2"><button class="ancho borde" id="pVer">Ver en el mapa</button><button class="ancho borde" id="pEditar">Editar</button></div>
-    <button class="ancho borde" id="pBorrar" style="color:var(--mal)">Borrar punto</button>
+    <button class="ancho borde rojo" id="pBorrar">Borrar punto</button>
     <button class="ancho borde" id="pVolver">← Lista de puntos</button>`);
+  cuerpo.querySelectorAll('[data-foto]').forEach(im => im.onclick = () => verFoto(urlsFotos[+im.dataset.foto]));
   cuerpo.querySelector('#pNav').onclick = () => { cerrarPanel(); navegarA(p); };
   cuerpo.querySelector('#pVer').onclick = () => { cerrarPanel(); S.seguir = false; irA(p.lat, p.lon, Math.max(vista.zoom, 17)); };
   cuerpo.querySelector('#pVolver').onclick = panelPuntos;
   cuerpo.querySelector('#pEditar').onclick = async () => {
-    const r = await dialogo({ titulo: 'Cambiar nombre', html: 'Nombre actual: <b>' + esc(p.nombre) + '</b>',
+    const r = await dialogo({ titulo: 'Cambiar nombre', html: 'Nombre actual: <b>' + esc(p.nombre) + '</b><br><small>Dejalo vacío para no cambiarlo.</small>',
       campo: { placeholder: p.nombre }, botones: [{ texto: 'Cancelar', valor: false, clase: 'borde' }, { texto: 'Siguiente', valor: true }] });
     if (!r.valor) return;
-    const r2 = await dialogo({ titulo: 'Cambiar nota', html: 'Nota actual: ' + (esc(p.nota) || '<i>(vacía)</i>') + '<br><small>Dejá el campo vacío para no cambiarla.</small>',
-      campo: { placeholder: 'Nueva nota' }, botones: [{ texto: 'Cancelar', valor: false, clase: 'borde' }, { texto: 'Guardar', valor: true }] });
+    const r2 = await dialogo({ titulo: 'Cambiar descripción', html: 'Actual: ' + (esc(p.nota) || '<i>(vacía)</i>') + '<br><small>Dejalo vacío para no cambiarla.</small>',
+      campo: { placeholder: 'Nueva descripción' }, botones: [{ texto: 'Cancelar', valor: false, clase: 'borde' }, { texto: 'Guardar', valor: true }] });
     if (!r2.valor) return;
     if (r.texto.trim()) p.nombre = r.texto.trim().slice(0, 80);
     if (r2.texto.trim()) p.nota = r2.texto.trim();
@@ -62,27 +91,20 @@ export function panelPunto(p) {
     pedirDibujo(); panelPunto(p); toast('Punto actualizado.');
   };
   cuerpo.querySelector('#pBorrar').onclick = async () => {
-    if (!await confirmar('Borrar punto', `¿Borrar el punto <b>${esc(p.nombre)}</b>? No se puede deshacer (salvo que lo tengas en una copia de seguridad).`, 'Borrar', 'Cancelar', true)) return;
+    if (!await confirmar('Borrar punto', `¿Borrar el punto <b>${esc(p.nombre)}</b> y sus fotos? No se puede deshacer (salvo que lo tengas en una copia de seguridad).`, 'Borrar', 'Cancelar', true)) return;
     await borrar('puntos', p.id);
     S.puntos = S.puntos.filter(x => x.id !== p.id);
     if (S.destino && S.destino.id === p.id) dejarDeNavegar();
     pedirDibujo(); panelPuntos();
   };
 }
-
-// Información de un elemento tocado en una capa.
-export function panelElemento(capa, f) {
-  const props = Object.entries(f.properties || {}).filter(([, v]) => v !== null && v !== '' && typeof v !== 'object');
-  const esPunto = f.geometry.type === 'Point';
-  const [lon, lat] = esPunto ? f.geometry.coordinates : [null, null];
-  const cuerpo = abrirPanel(capa.nombre, `
-    ${props.length ? `<table class="coords">${props.map(([k, v]) => `<tr><td>${esc(k)}</td><td>${esc(v)}</td></tr>`).join('')}</table>` : '<div class="vacio">Este elemento no tiene atributos.</div>'}
-    ${esPunto ? `<h4>Coordenadas</h4><table class="coords">${filasCoords(lat, lon)}</table>
-      <button class="ancho" id="eNav">➤ Navegar hacia aquí</button>` : ''}`);
-  if (esPunto) cuerpo.querySelector('#eNav').onclick = () => {
-    const nombre = f.properties?.nombre || f.properties?.name || f.properties?.Name || 'Elemento de ' + capa.nombre;
-    cerrarPanel(); navegarA({ id: 'elemento', nombre: String(nombre), lat, lon });
-  };
+// Foto a pantalla completa; tocar para cerrar.
+function verFoto(url) {
+  const ov = document.createElement('div');
+  ov.className = 'visorFoto';
+  ov.innerHTML = `<img src="${url}" alt="Foto">`;
+  ov.onclick = () => ov.remove();
+  document.body.appendChild(ov);
 }
 
 /* --- Navegación --- */

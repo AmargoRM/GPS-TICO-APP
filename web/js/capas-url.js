@@ -1,15 +1,17 @@
 /* =======================================================================
    CAPAS DESDE URL: GeoJSON, WFS y WMS
-   Necesitan internet. De estas capas solo se guarda la dirección y el
-   nombre; el contenido se descarga cada vez que se abre la app con conexión.
+   Igual que en la app Android: GeoJSON y WFS se DESCARGAN y quedan
+   guardados en el celular (se ven sin internet). Se recuerda la dirección
+   de origen para actualizarlos con el botón 🔄. WMS son imágenes que se
+   piden al servidor a medida que se mueve el mapa (necesita internet;
+   lo ya visto queda guardado).
 
    Problema común: CORS. Es una regla del SERVIDOR que decide si otras
    páginas web pueden leer sus datos. Si el servidor no lo permite, el
    navegador bloquea la descarga y no hay nada que la app pueda hacer.
    En ese caso se muestra un mensaje claro y la app sigue funcionando.
    ======================================================================= */
-import { S } from './estado.js';
-import { normalizarGeoJSON, adivinarSistema, reproyectar } from './importar.js';
+import { normalizarGeoJSON, ajustarProyeccion } from './importar.js';
 
 // Error con mensaje ya traducido para mostrar al usuario.
 export class ErrorURL extends Error {}
@@ -43,6 +45,7 @@ export async function pedirTexto(url) {
 }
 
 // Interpreta texto como GeoJSON y lo pasa a lat/lon si viene en CRTM05/Lambert.
+// Devuelve { fc, proyFuente }.
 function textoAGeoJSON(texto) {
   let obj;
   try { obj = JSON.parse(texto); }
@@ -55,15 +58,8 @@ function textoAGeoJSON(texto) {
   }
   let fc;
   try { fc = normalizarGeoJSON(obj); } catch (e) { throw new ErrorURL(e.message); }
-  const c = fc.features[0] && primera(fc.features[0].geometry);
-  if (c) { const r = adivinarSistema(c[0], c[1]); if (r.modo !== 'geo') reproyectar(fc, r.modo); }
-  return fc;
-}
-function primera(g) {
-  let hit = null;
-  const rec = a => { if (hit || !Array.isArray(a)) return; if (typeof a[0] === 'number') hit = a; else a.forEach(rec); };
-  if (g.type === 'GeometryCollection') (g.geometries || []).forEach(x => rec(x.coordinates)); else rec(g.coordinates);
-  return hit;
+  const r = ajustarProyeccion(fc, 'auto', null);
+  return { fc, proyFuente: r.modo };
 }
 
 /* --- GetCapabilities: lista de capas que ofrece un servidor WFS o WMS --- */
@@ -99,32 +95,38 @@ function urlWfsGeoJSON(base, typeName, formato) {
   return `${sinConsulta(base)}?${p}`;
 }
 
-// Descarga el contenido de una capa vectorial de URL (geojson o wfs).
-export async function descargarCapaURL(capa) {
-  if (capa.tipo === 'geojson') return textoAGeoJSON(await pedirTexto(capa.url));
-  if (capa.tipo === 'wfs') {
-    try { return textoAGeoJSON(await pedirTexto(urlWfsGeoJSON(capa.url, capa.capaServicio, 'application/json'))); }
-    catch (e) {
-      // Algunos servidores usan otro nombre para el formato GeoJSON.
-      if (e instanceof ErrorURL && /no devolvió GeoJSON|respondió con un error/.test(e.message)) {
-        return textoAGeoJSON(await pedirTexto(urlWfsGeoJSON(capa.url, capa.capaServicio, 'json')));
-      }
-      throw e;
+// Descarga una fuente {tipo:'geojson'|'wfs', url, capaServicio}. Devuelve { fc, proyFuente }.
+export async function descargarFuente(fuente) {
+  if (fuente.tipo === 'geojson') return textoAGeoJSON(await pedirTexto(fuente.url));
+  try { return textoAGeoJSON(await pedirTexto(urlWfsGeoJSON(fuente.url, fuente.capaServicio, 'application/json'))); }
+  catch (e) {
+    // Algunos servidores usan otro nombre para el formato GeoJSON.
+    if (e instanceof ErrorURL && /no devolvió GeoJSON|respondió con un error/.test(e.message)) {
+      return textoAGeoJSON(await pedirTexto(urlWfsGeoJSON(fuente.url, fuente.capaServicio, 'json')));
     }
+    throw e;
   }
-  return null;   // WMS no se descarga: se dibuja por cuadritos
 }
 
-// Carga (o recarga) en memoria una capa de URL y anota su estado.
-export async function cargarCapaURL(capa, alTerminar) {
-  if (capa.origen !== 'url' || capa.tipo === 'wms') return;
-  S.estadoURL.set(capa.id, 'cargando');
-  try {
-    const fc = await descargarCapaURL(capa);
-    S.datosURL.set(capa.id, fc);
-    S.estadoURL.set(capa.id, 'ok');
-  } catch (e) {
-    S.estadoURL.set(capa.id, e instanceof ErrorURL ? e.message : 'Error inesperado: ' + (e.message || e));
-  }
-  if (alTerminar) alTerminar();
+/* --- Consulta de una capa WMS en un punto (GetFeatureInfo) --- */
+const MERC = 20037508.342789244;
+const lon2merc = lon => lon * MERC / 180;
+const lat2merc = lat => Math.log(Math.tan((90 + lat) * Math.PI / 360)) / (Math.PI / 180) * MERC / 180;
+// vista = {oLon, eLon, nLat, sLat, ancho, alto}; px/py = toque en pantalla.
+// Devuelve { elementos } (GeoJSON) o { texto } o null.
+export async function consultarWMS(capa, vista, px, py) {
+  const v = capa.version || '1.3.0';
+  const p = new URLSearchParams({
+    SERVICE: 'WMS', VERSION: v, REQUEST: 'GetFeatureInfo', LAYERS: capa.capaServicio || '', QUERY_LAYERS: capa.capaServicio || '',
+    STYLES: '', FORMAT: 'image/png', INFO_FORMAT: 'application/json', FEATURE_COUNT: '5',
+    WIDTH: String(Math.round(vista.ancho)), HEIGHT: String(Math.round(vista.alto))
+  });
+  const crs = v === '1.3.0' ? 'CRS=EPSG:3857' : 'SRS=EPSG:3857';
+  const ij = v === '1.3.0' ? `I=${Math.round(px)}&J=${Math.round(py)}` : `X=${Math.round(px)}&Y=${Math.round(py)}`;
+  const bbox = `${lon2merc(vista.oLon)},${lat2merc(vista.sLat)},${lon2merc(vista.eLon)},${lat2merc(vista.nLat)}`;
+  const texto = await pedirTexto(`${sinConsulta(capa.url)}?${p}&${crs}&BBOX=${bbox}&${ij}`);
+  try { const j = JSON.parse(texto); if (j && j.features && j.features.length) return { elementos: j.features }; } catch (e) { /* no es JSON */ }
+  const limpio = texto.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
+  if (limpio.length > 2 && !/ServiceException|error/i.test(limpio.slice(0, 80))) return { texto: limpio.slice(0, 1500) };
+  return null;
 }
