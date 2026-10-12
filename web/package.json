@@ -1,0 +1,7 @@
+{
+  "name": "gps-tico-web",
+  "private": true,
+  "type": "module",
+  "description": "GPS TICO Web. No necesita instalar nada: los archivos se publican tal cual. Este archivo solo sirve para correr las pruebas con Node.",
+  "scripts": { "test": "node pruebas/geodesia.test.mjs && node pruebas/copia.test.mjs" }
+}

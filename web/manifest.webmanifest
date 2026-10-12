@@ -1,0 +1,18 @@
+{
+  "name": "GPS TICO Web",
+  "short_name": "GPS TICO",
+  "description": "GPS de campo para Costa Rica: CRTM05, Lambert, capas y puntos. Funciona sin conexión.",
+  "lang": "es-CR",
+  "id": "./",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#0A1214",
+  "theme_color": "#0A1214",
+  "icons": [
+    { "src": "iconos/icono-192.png", "sizes": "192x192", "type": "image/png" },
+    { "src": "iconos/icono-512.png", "sizes": "512x512", "type": "image/png" },
+    { "src": "iconos/icono-maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ]
+}
